@@ -1,6 +1,5 @@
 import requests
 from requests.exceptions import HTTPError
-from babel.numbers import format_currency
 import logging
 import json
 from decimal import Decimal
@@ -16,36 +15,34 @@ class GetAccountsListFailedException(Exception):
 
 
 class MoneyDashboard():
-    def __init__(self, email, password, currency="GBP"):
-        self.__logger = logging.getLogger()
-        self.__session = None
-        self._requestVerificationToken = ""
 
+    def __init__(self, session=None, email=None, password=None):
+        self.__session = session
+        self.__logger = logging.getLogger()
         self._email = email
         self._password = password
+        self._requestVerificationToken = ""
 
-        self._currency = currency
-
-    def _get_session(self):
+    def get_session(self):
         return self.__session
 
-    def _set_session(self, session):
+    def set_session(self, session):
         self.__session = session
 
-    def _login(self):
+    def login(self):
         self.__logger.info('Logging in...')
 
-        self._set_session(requests.session())
+        self.set_session(requests.session())
 
         landing_url = "https://my.moneydashboard.com/landing"
-        landing_response = self._get_session().request("GET", landing_url)
+        landing_response = self.get_session().request("GET", landing_url)
         soup = BeautifulSoup(landing_response.text, "html.parser")
         self._requestVerificationToken = soup.find("input", {"name": "__RequestVerificationToken"})['value']
 
-        cookies = self._get_session().cookies.get_dict()
+        cookies = self.get_session().cookies.get_dict()
         cookie_string = "; ".join([str(x) + "=" + str(y) for x, y in cookies.items()])
 
-        self._set_session(requests.session())
+        self.set_session(requests.session())
         """Login to Moneydashboard using the credentials provided in config"""
         url = "https://my.moneydashboard.com/landing/login"
 
@@ -75,7 +72,7 @@ class MoneyDashboard():
             'Cookie': cookie_string,
         }
         try:
-            response = self._get_session().request("POST", url, json=payload, headers=headers)
+            response = self.get_session().request("POST", url, json=payload, headers=headers)
             response.raise_for_status()
         except HTTPError as http_err:
             self.__logger.error(f'[HTTP Error]: Failed to login ({http_err})')
@@ -91,11 +88,11 @@ class MoneyDashboard():
                 self.__logger.error(f'[Error]: Failed to login ({response_data["ErrorCode"]})')
                 raise LoginFailedException
 
-    def _get_accounts(self):
+    def get_accounts(self):
         self.__logger.info('Getting Accounts...')
 
         """Session expires every 10 minutes or so, so we'll login again anyway."""
-        self._login()
+        self.login()
 
         """Retrieve account list from MoneyDashboard account"""
         url = "https://my.moneydashboard.com/api/Account/"
@@ -116,7 +113,7 @@ class MoneyDashboard():
             'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,it;q=0.7',
         }
         try:
-            response = self._get_session().request("GET", url, headers=headers)
+            response = self.get_session().request("GET", url, headers=headers)
             response.raise_for_status()
         except HTTPError as http_err:
             self.__logger.error(f'[HTTP Error]: Failed to get Account List ({http_err})')
@@ -126,9 +123,49 @@ class MoneyDashboard():
             raise GetAccountsListFailedException
         else:
             return response.json()
+            
+    def get_trans(self):
+        self.__logger.info('Getting Accounts...')
 
-    def _money_fmt(self, balance):
-        return format_currency(Decimal(balance), self._currency, locale='en_GB')
+        """Session expires every 10 minutes or so, so we'll login again anyway."""
+        self.login()
+
+        """Retrieve account list from MoneyDashboard account"""
+        
+        accounts = self.get_accounts()
+        account_ids = []
+        for account in accounts:
+          string_param = f"accountIds={account['Id']}"
+          account_ids.append(string_param)
+        account_id_params = '&'.join(account_ids)
+        url = f"https://my.moneydashboard.com/api/TransactionExport?{account_id_params}&description=&tags"
+
+        headers = {
+            "Authority": "my.moneydashboard.com",
+            'Accept': 'application/json, text/plain, */*',
+            "X-Newrelic-Id": "UA4AV1JTGwAJU1BaDgc=",
+            'Dnt': '1',
+            'X-Requested-With': 'XMLHttpRequest',
+            '__requestverificationtoken': self._requestVerificationToken,
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) C\
+            hrome/78.0.3904.70 Safari/537.36',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Referer': 'https://my.moneydashboard.com/dashboard',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,it;q=0.7',
+        }
+        try:
+            response = self.get_session().request("GET", url, headers=headers)
+            response.raise_for_status()
+        except HTTPError as http_err:
+            self.__logger.error(f'[HTTP Error]: Failed to get Account List ({http_err})')
+            raise GetAccountsListFailedException
+        except Exception as err:
+            self.__logger.error(f'[Error]: Failed to get Account List ({err})')
+            raise GetAccountsListFailedException
+        else:
+            return response#.json()
 
     def get_balances(self):
         balance = {
@@ -136,17 +173,12 @@ class MoneyDashboard():
             "positive_balance": Decimal(0.00),
             "negative_balance": Decimal(0.00),
         }
+        balances = []
 
-        current_accounts_balances = []
-        credit_cards_balances = []
-        saving_goals_balances = []
-        other_accounts_balances = []
-        unknown_balances = []
-
-        accounts = self._get_accounts()
+        accounts = self.get_accounts()
         for account in accounts:
             if account['IsClosed'] is not True:
-                if account["IsIncludedInCashflow"] is True and account["IncludeInCalculations"] is True:
+                if account["IsIncludedInCashflow"] is True:
                     bal = Decimal(account['Balance'])
                     if account["Balance"] >= 0:
                         balance["positive_balance"] += bal
@@ -155,35 +187,55 @@ class MoneyDashboard():
 
                     balance['net_balance'] += bal
 
-                balance_obj = {
+                balances.append({
                     "operator": account["Institution"]["Name"],
                     "name": account["Name"],
-                    "balance": self._money_fmt(account["Balance"]),
+                    "balance": float(self.moneyfmt(Decimal(account["Balance"]), 2, '', '')),
                     "last_update": account["LastRefreshed"]
-                }
+                })
 
-                if account["AccountTypeId"] == 0:
-                    current_accounts_balances.append(balance_obj)
-                elif account["AccountTypeId"] == 2:
-                    credit_cards_balances.append(balance_obj)
-                elif account["AccountTypeId"] == 3:
-                    other_accounts_balances.append(balance_obj)
-                elif account["AccountTypeId"] == 4:
-                    saving_goals_balances.append(balance_obj)
-                else:
-                    unknown_balances.append(balance_obj)
-
-        acct_balances = {
-            "current_accounts": current_accounts_balances,
-            "credit_cards": credit_cards_balances,
-            "other_accounts": other_accounts_balances,
-            "saving_goals": saving_goals_balances,
-            "unknown": unknown_balances,
-        }
-
-        balance['net_balance'] = self._money_fmt(balance['net_balance'])
-        balance['positive_balance'] = self._money_fmt(balance['positive_balance'])
-        balance['negative_balance'] = self._money_fmt(balance['negative_balance'])
-        balance['balances'] = acct_balances
+        balance['net_balance'] = float(self.moneyfmt(Decimal(balance['net_balance']), 2, '', ''))
+        balance['positive_balance'] = float(self.moneyfmt(Decimal(balance['positive_balance']), 2, '', ''))
+        balance['negative_balance'] = float(self.moneyfmt(Decimal(balance['negative_balance']), 2, '', ''))
+        balance['balances'] = balances
 
         return json.dumps(balance)
+
+    def moneyfmt(self, value, places=2, curr='', sep=',', dp='.',
+                 pos='', neg='-', trailneg=''):
+        """Convert Decimal to a money formatted string.
+
+        places:  required number of places after the decimal point
+        curr:    optional currency symbol before the sign (may be blank)
+        sep:     optional grouping separator (comma, period, space, or blank)
+        dp:      decimal point indicator (comma or period)
+                 only specify as blank when places is zero
+        pos:     optional sign for positive numbers: '+', space or blank
+        neg:     optional sign for negative numbers: '-', '(', space or blank
+        trailneg:optional trailing minus indicator:  '-', ')', space or blank
+
+
+        """
+        q = Decimal(10) ** -places  # 2 places --> '0.01'
+        sign, digits, exp = value.quantize(q).as_tuple()
+        result = []
+        digits = list(map(str, digits))
+        build, next = result.append, digits.pop
+        if sign:
+            build(trailneg)
+        for i in range(places):
+            build(next() if digits else '0')
+        if places:
+            build(dp)
+        if not digits:
+            build('0')
+        i = 0
+        while digits:
+            build(next())
+            i += 1
+            if i == 3 and digits:
+                i = 0
+                build(sep)
+        build(curr)
+        build(neg if sign else pos)
+        return ''.join(reversed(result))
