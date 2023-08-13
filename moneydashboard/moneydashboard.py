@@ -166,6 +166,50 @@ class MoneyDashboard():
             raise GetAccountsListFailedException
         else:
             return response#.json()
+            
+    def refresh_accounts(self):
+        self.__logger.info('Getting Accounts...')
+
+        """Session expires every 10 minutes or so, so we'll login again anyway."""
+        self.login()
+
+        """Retrieve account list from MoneyDashboard account"""
+        
+        accounts = self.get_accounts()
+        account_ids = []
+        for account in accounts:
+          string_param = f"accountIds={account['Id']}"
+          account_ids.append(string_param)
+        url = "https://my.moneydashboard.com/api/Account/{account_id}/Refresh"
+
+        headers = {
+            "Authority": "my.moneydashboard.com",
+            'Accept': 'application/json, text/plain, */*',
+            "X-Newrelic-Id": "UA4AV1JTGwAJU1BaDgc=",
+            'Dnt': '1',
+            'X-Requested-With': 'XMLHttpRequest',
+            '__requestverificationtoken': self._requestVerificationToken,
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) C\
+            hrome/78.0.3904.70 Safari/537.36',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Referer': 'https://my.moneydashboard.com/dashboard',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,it;q=0.7',
+        }
+        try:
+            for account in accounts:
+                url_f = url.format(account_id=account['Id'])
+                response = self.get_session().request("POST", url_f, headers=headers)
+                response.raise_for_status()
+        except HTTPError as http_err:
+            self.__logger.error(f'[HTTP Error]: Failed to get Account List ({http_err})')
+            raise GetAccountsListFailedException
+        except Exception as err:
+            self.__logger.error(f'[Error]: Failed to get Account List ({err})')
+            raise GetAccountsListFailedException
+        else:
+            return response#.json()
 
     def get_balances(self):
         balance = {
